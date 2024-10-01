@@ -4,7 +4,6 @@
 #include "ofxCv.h"
 #include "ofxGui.h"
 #include "ofxOsc.h"
-// #include "ofxSyphon.h"
 #include "ofxXmlSettings.h"
 
 class ofApp final : public ofBaseApp
@@ -13,7 +12,7 @@ public:
     void setup() override;
     void update() override;
     void drawGrid() const;
-    void drawPCL() const;
+    void drawPCL();
     void drawFBO();
     void draw() override;
     void exit() override;
@@ -40,7 +39,6 @@ private:
     ofParameter<float> pitchOffset;
     ofParameter<float> minDistance;
     ofParameter<float> maxDistance;
-
     ofParameter<float> pointSize;
     ofParameter<int> pointAlpha;
 
@@ -48,11 +46,12 @@ private:
     ofParameter<string> oscSendIP;
     ofParameter<int> oscSendPort;
     ofParameter<int> oscReceivePort;
+    ofParameter<bool> sendCartesian;
 
     ofParameterGroup trackerParams;
     ofParameter<float> minArea;
     ofParameter<float> maxArea;
-    ofParameter<int> threshold;
+    ofParameter<float> threshold;
     ofParameter<bool> findHoles;
     ofParameter<int> persistence;
     ofParameter<float> maximumDistance;
@@ -70,6 +69,7 @@ private:
 
     // Data processing
     std::vector<glm::vec3> processedPoints;
+    std::vector<glm::vec3> projectedPoints;
     void processPoints(const std::vector<glm::vec3>& points);
 
     // Rendering
@@ -85,15 +85,15 @@ private:
     void saveSettings();
     void oscSetup(ofAbstractParameter& e);
     void trackerSetup(ofAbstractParameter& e);
+    void updateRotationMatrix(ofAbstractParameter& e);
 
     ofxOscReceiver receiver;
     ofxOscSender sender;
     void sendTrackedBlobs();
 
-    static ofVec3f rotatePoint(const ofVec3f& point, float roll, float pitch, float yaw);
-
-    // Syphon server
-    // ofxSyphonServer syphonServer;
+    // Utility functions
+    glm::mat4 rotationMatrix;
+    static glm::vec3 rotatePoint(const glm::vec3& point, const glm::mat4& rotationMatrix);
 
     // Debug parameters
     ofParameterGroup debugParams;
@@ -103,9 +103,8 @@ private:
     // GUI visibility
     bool showGUI = true;
 
-    // ofEasyCam for camera control
     ofEasyCam easyCam;
 
-    // ofVboMesh for efficient point cloud rendering
     ofVboMesh pointMesh;
+    ofVboMesh projectedMesh;
 };

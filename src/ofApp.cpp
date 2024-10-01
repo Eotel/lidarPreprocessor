@@ -1,10 +1,11 @@
 #include "ofApp.h"
 
+#include <sys/stat.h>
+
 //--------------------------------------------------------------
 void ofApp::setup()
 {
     ofSetLogLevel(OF_LOG_VERBOSE);
-
     ofSetFrameRate(60);
 
     ofxXmlSettings settings;
@@ -19,6 +20,7 @@ void ofApp::setup()
     oscParams.add(oscSendIP.set("Send IP", settings.getValue("Settings:OSC:oscSendIP", "localhost")));
     oscParams.add(oscSendPort.set("Send Port", settings.getValue("Settings:OSC:oscSendPort", 10000), 0, 65535));
     oscParams.add(oscReceivePort.set("Receive Port", settings.getValue("Settings:OSC:oscReceivePort", 8000), 0, 65535));
+    oscParams.add(sendCartesian.set("Send Cartesian", true));
 
     // LiDAR
     params.setName("LiDAR Parameters");
@@ -69,13 +71,13 @@ void ofApp::setup()
     saveButton.addListener(this, &ofApp::saveSettings);
     ofAddListener(oscParams.parameterChangedE(), this, &ofApp::oscSetup);
     ofAddListener(trackerParams.parameterChangedE(), this, &ofApp::trackerSetup);
+    ofAddListener(params.parameterChangedE(), this, &ofApp::updateRotationMatrix);
 
     oscSetup(oscParams);
     trackerSetup(trackerParams);
+    updateRotationMatrix(params);
 
-    ofLogNotice() << "ofApp::setup";
-
-    fbo.allocate(ofGetWidth(), ofGetHeight());
+    fbo.allocate(ofGetWidth(), ofGetHeight(), GL_RGBA);
 
     pointMesh.setMode(OF_PRIMITIVE_POINTS);
     glPointSize(pointSize);
@@ -84,15 +86,12 @@ void ofApp::setup()
 
     easyCam.setFarClip(100000.0f);
     easyCam.setNearClip(10.0f);
-
-
-    // syphonServer.setName("FBO Output");
 }
 
 //--------------------------------------------------------------
 void ofApp::update()
 {
-    // Receive OSC messages
+    // Process OSC messages
     ofxOscMessage m;
     while (receiver.hasWaitingMessages())
     {
@@ -104,19 +103,19 @@ void ofApp::update()
             {
                 const float angle = m.getArgAsFloat(i);
                 const float distance = m.getArgAsFloat(i + 1);
-                glm::vec3 point(distance * cos(ofDegToRad(angle)),
-                                distance * sin(ofDegToRad(angle)),
+                glm::vec3 point(distance * cos(glm::radians(angle)),
+                                distance * sin(glm::radians(angle)),
                                 0);
                 points.push_back(point);
             }
-            // Process the points directly
+            // Process the points
             processPoints(points);
 
             // Update point mesh
             pointMesh.clear();
             pointMesh.addVertices(processedPoints);
 
-            // Continue with your update logic
+            // Update FBO and tracking
             updateFbo();
             detectAndTrackBlobs();
             sendTrackedBlobs();
@@ -135,6 +134,7 @@ void ofApp::update()
     }
     blobInfo = ss.str();
 
+    // Enable or disable mouse input for easyCam based on GUI interaction
     if (showGUI && guiPanel.getShape().inside(ofGetMouseX(), ofGetMouseY()))
     {
         easyCam.disableMouseInput();
@@ -149,7 +149,7 @@ void ofApp::drawGrid() const
 {
     ofPushStyle();
     ofSetColor(50);
-    const float gridLimit = maxDistance * 1.5f; // Extend the grid beyond the max distance
+    const float gridLimit = maxDistance * 1.5f;
 
     // Draw grid in 3D space
     for (float x = -gridLimit; x <= gridLimit; x += gridSpacing)
@@ -160,19 +160,26 @@ void ofApp::drawGrid() const
     ofPopStyle();
 }
 
-void ofApp::drawPCL() const
+void ofApp::drawPCL()
 {
     ofPushStyle();
-    ofSetColor(0, 255, 0, pointAlpha); // Set point color and alpha
-    glPointSize(pointSize); // Update point size
-    pointMesh.draw(); // Draw point mesh
+    // Draw original point cloud in green
+    ofSetColor(0, 255, 0, pointAlpha);
+    glPointSize(pointSize);
+    pointMesh.draw();
+
+    // Draw projected point cloud in blue
+    ofSetColor(0, 0, 255, pointAlpha);
+    projectedMesh.setMode(OF_PRIMITIVE_POINTS);
+    projectedMesh.addVertices(projectedPoints);
+    projectedMesh.draw();
     ofPopStyle();
 }
 
 void ofApp::drawFBO()
 {
     ofPushMatrix();
-    ofTranslate(ofGetWidth() / 2 - fbo.getWidth() / 2, ofGetHeight() / 2 - fbo.getHeight() / 2);
+    ofTranslate(0, 0);
 
     if (showFBO)
     {
@@ -181,23 +188,27 @@ void ofApp::drawFBO()
 
     if (showTracker)
     {
+        ofPushStyle();
+        ofNoFill();
+        ofSetColor(255, 0, 0);
         contourFinder.draw();
 
-        const ofxCv::RectTracker& tracker = contourFinder.getTracker();
+        const auto& tracker = contourFinder.getTracker();
         for (int i = 0; i < contourFinder.size(); i++)
         {
-            const ofRectangle r = ofxCv::toOf(contourFinder.getBoundingRect(i));
-            const ofPoint center = ofxCv::toOf(contourFinder.getCenter(i));
-            ofPushMatrix();
-            ofTranslate(center.x, center.y);
+            const cv::Rect& rect = contourFinder.getBoundingRect(i);
+            const cv::Point2f& centerCv = contourFinder.getCenter(i);
+            glm::vec2 center = ofxCv::toOf(centerCv);
+
             int label = contourFinder.getLabel(i);
-            string msg = ofToString(label) + ":" + ofToString(tracker.getAge(label));
-            ofDrawBitmapString(msg, 0, 0);
-            const ofVec2f velocity = ofxCv::toOf(contourFinder.getVelocity(i));
-            ofScale(5, 5);
-            ofDrawLine(0, 0, velocity.x, velocity.y);
-            ofPopMatrix();
+            std::string msg = ofToString(label) + ":" + ofToString(tracker.getAge(label));
+
+            ofDrawBitmapString(msg, center.x, center.y);
+
+            const glm::vec2 velocity = ofxCv::toOf(contourFinder.getVelocity(i));
+            ofDrawLine(center, center + velocity * 5);
         }
+        ofPopStyle();
     }
 
     ofPopMatrix();
@@ -207,7 +218,6 @@ void ofApp::drawFBO()
 void ofApp::draw()
 {
     ofBackground(0);
-
     ofEnableDepthTest();
 
     easyCam.begin();
@@ -222,7 +232,6 @@ void ofApp::draw()
     ofDisableDepthTest();
 
     if (showFBO || showTracker) drawFBO();
-
     if (showGUI) guiPanel.draw();
 }
 
@@ -234,6 +243,7 @@ void ofApp::exit()
     saveButton.removeListener(this, &ofApp::saveSettings);
     ofRemoveListener(oscParams.parameterChangedE(), this, &ofApp::oscSetup);
     ofRemoveListener(trackerParams.parameterChangedE(), this, &ofApp::trackerSetup);
+    ofRemoveListener(params.parameterChangedE(), this, &ofApp::updateRotationMatrix);
 }
 
 //--------------------------------------------------------------
@@ -300,19 +310,17 @@ void ofApp::gotMessage(ofMessage msg)
 {
 };
 
-
-ofVec3f ofApp::rotatePoint(const ofVec3f& point, const float roll, const float pitch, const float yaw)
+void ofApp::updateRotationMatrix(ofAbstractParameter& e)
 {
-    // Create quaternions for each rotation
-    const ofQuaternion qPitch(pitch, ofVec3f(1, 0, 0));
-    const ofQuaternion qYaw(yaw, ofVec3f(0, 1, 0));
-    const ofQuaternion qRoll(roll, ofVec3f(0, 0, 1));
+    rotationMatrix = glm::mat4(1.0f);
+    rotationMatrix = glm::rotate(rotationMatrix, glm::radians(yawOffset.get()), glm::vec3(0, 1, 0));
+    rotationMatrix = glm::rotate(rotationMatrix, glm::radians(pitchOffset.get()), glm::vec3(1, 0, 0));
+    rotationMatrix = glm::rotate(rotationMatrix, glm::radians(rollOffset.get()), glm::vec3(0, 0, 1));
+}
 
-    const ofQuaternion rotation = qPitch * qYaw * qRoll;
-
-    const ofVec3f rotatedPoint = rotation * point;
-
-    return rotatedPoint;
+glm::vec3 ofApp::rotatePoint(const glm::vec3& point, const glm::mat4& rotationMatrix)
+{
+    return glm::vec3(rotationMatrix * glm::vec4(point, 1.0f));
 }
 
 void ofApp::loadSettings()
@@ -335,6 +343,8 @@ void ofApp::saveSettings()
 
 void ofApp::oscSetup(ofAbstractParameter& e)
 {
+    if (e.getName() == "Send Cartesian") return;
+
     ofLogNotice("ofApp::oscChanged") << "Send IP: " << oscSendIP << ", Send Port: " << oscSendPort;
     ofLogNotice("ofApp::oscChanged") << "Receive Port: " << oscReceivePort;
     sender.setup(oscSendIP, oscSendPort);
@@ -354,40 +364,42 @@ void ofApp::trackerSetup(ofAbstractParameter& e)
 void ofApp::processPoints(const std::vector<glm::vec3>& points)
 {
     processedPoints.clear();
+    projectedPoints.clear();
+
     for (const auto& point : points)
     {
-        if (const float distance = glm::length(point); distance < minDistance || distance > maxDistance)
+        const float distance = glm::length(point);
+        if (distance < minDistance || distance > maxDistance)
         {
             continue;
         }
 
-        ofVec3f rotatedPoint = rotatePoint(point, rollOffset, pitchOffset, yawOffset);
-
+        // Rotate point using the rotation matrix
+        glm::vec3 rotatedPoint = rotatePoint(point, rotationMatrix);
         processedPoints.push_back(rotatedPoint);
+
+        // Project the rotated point onto the grid plane (z = 0)
+        glm::vec3 projectedPoint = rotatedPoint;
+        projectedPoint.z = 0;
+        projectedPoints.push_back(projectedPoint);
     }
 }
 
 void ofApp::updateFbo() const
 {
     fbo.begin();
-    ofClear(0, 0, 0, 255);
+    ofClear(0, 0, 0, 0);
 
     ofPushMatrix();
     ofTranslate(fbo.getWidth() / 2, fbo.getHeight() / 2);
-
     ofScale(scale, scale, scale);
 
-    ofSetColor(pointAlpha);
-    ofEnableBlendMode(OF_BLENDMODE_ADD); // Enable additive blending
-    for (const auto& point : processedPoints)
+    ofSetColor(255);
+    ofFill();
+    for (const auto& point : projectedPoints)
     {
-        // Project the 3D point onto the z=0 plane for FBO rendering
-        ofPoint projectedPoint = point;
-        projectedPoint.z = 0;
-
-        ofDrawCircle(projectedPoint.x, projectedPoint.y, pointSize);
+        ofDrawCircle(point.x, point.y, pointSize);
     }
-    ofDisableBlendMode();
 
     ofPopMatrix();
     fbo.end();
@@ -400,31 +412,51 @@ void ofApp::detectAndTrackBlobs()
 
     const cv::Mat mat = ofxCv::toCv(pixels);
     cv::Mat gray;
-    cv::cvtColor(mat, gray, cv::COLOR_RGB2GRAY);
+    cv::cvtColor(mat, gray, cv::COLOR_RGBA2GRAY);
 
+    contourFinder.setThreshold(threshold);
     contourFinder.findContours(gray);
 }
 
 void ofApp::sendTrackedBlobs()
 {
-    ofxOscMessage m;
-    m.setAddress("/tracked_blobs");
-
     for (int i = 0; i < contourFinder.size(); i++)
     {
-        const ofRectangle boundingRect = ofxCv::toOf(contourFinder.getBoundingRect(i));
-        const ofPoint center = ofxCv::toOf(contourFinder.getCenter(i));
-        const ofVec2f velocity = ofxCv::toOf(contourFinder.getVelocity(i));
         const int label = contourFinder.getLabel(i);
 
-        m.addIntArg(label);
-        m.addFloatArg(center.x);
-        m.addFloatArg(center.y);
-        m.addFloatArg(boundingRect.width);
-        m.addFloatArg(boundingRect.height);
-        m.addFloatArg(velocity.x);
-        m.addFloatArg(velocity.y);
-    }
+        // Get center in image coordinates
+        glm::vec2 center;
+        try
+        {
+            center = ofxCv::toOf(contourFinder.getCenter(i));
+        }
+        catch (...)
+        {
+            // If center cannot be obtained, skip this blob
+            continue;
+        }
 
-    sender.sendMessage(m);
+        // Convert to world coordinates (mm units)
+        center.x = (center.x - fbo.getWidth() / 2) / scale;
+        center.y = (center.y - fbo.getHeight() / 2) / scale;
+
+        ofxOscMessage m;
+        if (sendCartesian)
+        {
+            m.setAddress("/blob/cartesian");
+            m.addIntArg(label);
+            m.addFloatArg(center.x); // X coordinate in mm
+            m.addFloatArg(center.y); // Y coordinate in mm
+        }
+        else
+        {
+            m.setAddress("/blob/polar");
+            const float distance = glm::length(center);
+            const float angle = glm::degrees(atan2(center.y, center.x));
+            m.addIntArg(label);
+            m.addFloatArg(angle); // Angle in degrees
+            m.addFloatArg(distance); // Distance in mm
+        }
+        sender.sendMessage(m, false); // Non-blocking send
+    }
 }
