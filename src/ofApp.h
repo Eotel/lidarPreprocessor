@@ -1,8 +1,10 @@
 #pragma once
 
+#include <sys/stat.h>
 #include "ofMain.h"
 #include "ofxCv.h"
 #include "ofxGui.h"
+// #include "ofxImGui.h"
 #include "ofxOsc.h"
 #include "ofxXmlSettings.h"
 
@@ -13,7 +15,9 @@ public:
     void update() override;
     void drawGrid() const;
     void drawPCL();
-    void drawFBO();
+    void drawFBO() const;
+    void drawFBOGrid() const;
+    void drawFBOGridLabels() const;
     void draw() override;
     void exit() override;
 
@@ -37,10 +41,16 @@ private:
     ofParameter<float> yawOffset;
     ofParameter<float> rollOffset;
     ofParameter<float> pitchOffset;
+    ofParameter<float> xOffset;
+    ofParameter<float> yOffset;
+    ofParameter<float> zOffset;
     ofParameter<float> minDistance;
     ofParameter<float> maxDistance;
     ofParameter<float> pointSize;
     ofParameter<int> pointAlpha;
+
+    ofParameter<int> pointSizeMode;
+    ofParameter<float> pointSizeMultiplier;
 
     ofParameterGroup oscParams;
     ofParameter<string> oscSendIP;
@@ -61,6 +71,7 @@ private:
     ofParameter<bool> showFBO;
     ofParameter<bool> showTracker;
     ofParameter<bool> showGrid;
+    ofParameter<bool> showFBOGrid;
     ofParameter<float> scale;
     ofParameter<float> gridSpacing;
 
@@ -78,7 +89,6 @@ private:
 
     // Blob detection and tracking
     ofxCv::ContourFinder contourFinder;
-    ofxCv::RectTracker tracker;
     void detectAndTrackBlobs();
 
     void loadSettings();
@@ -90,6 +100,7 @@ private:
     ofxOscReceiver receiver;
     ofxOscSender sender;
     void sendTrackedBlobs();
+    void sendTrackedBlobs(int lidarID);
 
     // Utility functions
     glm::mat4 rotationMatrix;
@@ -97,7 +108,7 @@ private:
 
     // Debug parameters
     ofParameterGroup debugParams;
-    ofParameter<float> fps;
+    ofParameter<int> fps;
     ofParameter<string> blobInfo;
 
     // GUI visibility
@@ -107,4 +118,7 @@ private:
 
     ofVboMesh pointMesh;
     ofVboMesh projectedMesh;
+
+    int ofWidth{0};
+    int ofHeight{0};
 };

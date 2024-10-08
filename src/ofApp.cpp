@@ -1,6 +1,5 @@
 #include "ofApp.h"
 
-#include <sys/stat.h>
 
 //--------------------------------------------------------------
 void ofApp::setup()
@@ -27,11 +26,17 @@ void ofApp::setup()
     params.add(yawOffset.set("Yaw Offset", 0, -180, 180));
     params.add(rollOffset.set("Roll Offset", 0, -90, 90));
     params.add(pitchOffset.set("Pitch Offset", 0, -90, 90));
+    params.add(xOffset.set("X Offset", 0, -1000, 1000));
+    params.add(yOffset.set("Y Offset", 0, -1000, 1000));
+    params.add(zOffset.set("Z Offset", 0, -1000, 1000));
     params.add(minDistance.set("Min Distance", 0, 0, 1000));
     params.add(maxDistance.set("Max Distance", 1000, 0, 30000)); // Adjusted max distance to 30,000 mm
 
-    params.add(pointSize.set("Point Size", 2, 0.5, 10));
+    params.add(pointSize.set("Point Size", 2, 0.5, 100));
     params.add(pointAlpha.set("Point Alpha", 128, 0, 255));
+
+    params.add(pointSizeMode.set("Point Size Mode", 0, 0, 2));
+    params.add(pointSizeMultiplier.set("Point Size Multiplier", 1, 0.001, 1));
 
     // Tracker
     trackerParams.setName("Tracker Parameters");
@@ -47,9 +52,10 @@ void ofApp::setup()
     viewParams.add(showPCL.set("Show PCL", true));
     viewParams.add(showFBO.set("Show FBO", false));
     viewParams.add(showTracker.set("Show Tracker", false));
-    viewParams.add(showGrid.set("Show Grid", true)); // Added grid visibility
-    viewParams.add(scale.set("Scale", 0.01f, 0.001f, 1.0f)); // Added scaling parameter
-    viewParams.add(gridSpacing.set("Grid Spacing", 500.0f, 100.0f, 5000.0f)); // Grid spacing parameter
+    viewParams.add(showGrid.set("Show Grid", true));
+    viewParams.add(showFBOGrid.set("Show FBO Grid", false));
+    viewParams.add(scale.set("Scale", 0.01f, 0.001f, 1.0f));
+    viewParams.add(gridSpacing.set("Grid Spacing", 500.0f, 100.0f, 5000.0f));
 
     // Debug
     debugParams.setName("Debug Info");
@@ -91,6 +97,9 @@ void ofApp::setup()
 //--------------------------------------------------------------
 void ofApp::update()
 {
+    ofWidth = ofGetWidth();
+    ofHeight = ofGetHeight();
+
     // Process OSC messages
     ofxOscMessage m;
     while (receiver.hasWaitingMessages())
@@ -98,6 +107,12 @@ void ofApp::update()
         receiver.getNextMessage(m);
         if (m.getAddress() == "/lidar")
         {
+            if (m.getNumArgs() < 3)
+            {
+                // Not enough arguments, skip
+                continue;
+            }
+            const int lidarID = m.getArgAsInt(0);
             std::vector<glm::vec3> points;
             for (int i = 1; i < m.getNumArgs(); i += 2)
             {
@@ -108,31 +123,23 @@ void ofApp::update()
                                 0);
                 points.push_back(point);
             }
-            // Process the points
             processPoints(points);
 
-            // Update point mesh
             pointMesh.clear();
+            projectedMesh.clear();
             pointMesh.addVertices(processedPoints);
 
-            // Update FBO and tracking
             updateFbo();
             detectAndTrackBlobs();
-            sendTrackedBlobs();
+            sendTrackedBlobs(lidarID);
         }
     }
 
     // Update FPS
-    fps = ofGetFrameRate();
+    fps = static_cast<int>(ofGetFrameRate());
 
     // Update blob information
-    std::stringstream ss;
-    for (int i = 0; i < contourFinder.size(); i++)
-    {
-        const float area = contourFinder.getContourArea(i);
-        ss << "Blob " << i << " Area: " << area << "\n";
-    }
-    blobInfo = ss.str();
+    blobInfo = ofToString(contourFinder.size());
 
     // Enable or disable mouse input for easyCam based on GUI interaction
     if (showGUI && guiPanel.getShape().inside(ofGetMouseX(), ofGetMouseY()))
@@ -150,15 +157,69 @@ void ofApp::drawGrid() const
     ofPushStyle();
     ofSetColor(50);
     const float gridLimit = maxDistance * 1.5f;
+    const int numGridLines = static_cast<int>(gridLimit / gridSpacing);
 
-    // Draw grid in 3D space
-    for (float x = -gridLimit; x <= gridLimit; x += gridSpacing)
+    for (int i = -numGridLines; i <= numGridLines; ++i)
     {
+        const float x = i * gridSpacing;
         ofDrawLine(x, -gridLimit, 0, x, gridLimit, 0); // Lines along Y-axis
         ofDrawLine(-gridLimit, x, 0, gridLimit, x, 0); // Lines along X-axis
     }
     ofPopStyle();
 }
+
+void ofApp::drawFBOGrid() const
+{
+    ofPushStyle();
+    ofSetColor(50);
+    const float gridLimit = maxDistance * 1.5f;
+    const int numGridLines = static_cast<int>(gridLimit / gridSpacing);
+
+    for (int i = -numGridLines; i <= numGridLines; ++i)
+    {
+        const float x = i * gridSpacing;
+        ofDrawLine(x, -gridLimit, x, gridLimit); // Vertical lines
+        ofDrawLine(-gridLimit, x, gridLimit, x); // Horizontal lines
+    }
+    ofPopStyle();
+}
+
+void ofApp::drawFBOGridLabels() const
+{
+    ofPushMatrix();
+
+    const float fboDrawWidth = fbo.getWidth();
+    const float fboDrawHeight = fbo.getHeight();
+    const float scaleFactor = std::min(ofWidth / fboDrawWidth, ofHeight / fboDrawHeight);
+
+    ofTranslate((ofWidth - fboDrawWidth * scaleFactor) / 2, (ofHeight - fboDrawHeight * scaleFactor) / 2);
+    ofScale(scaleFactor, scaleFactor);
+
+    // Match coordinate system inside FBO
+    ofPushMatrix();
+    ofTranslate(fbo.getWidth() / 2, fbo.getHeight() / 2);
+    ofScale(scale, scale);
+
+    ofSetColor(255);
+    constexpr float labelSpacing = 1000.0f; // 1 meter in mm
+    const float gridLimit = maxDistance * 1.5f;
+    const int numLabels = static_cast<int>(gridLimit / labelSpacing);
+
+    for (int i = -numLabels; i <= numLabels; ++i)
+    {
+        if (i == 0) continue; // Skip origin
+        const float pos = i * labelSpacing;
+        std::string label = std::to_string(i) + "m";
+
+        // Draw labels at (pos, 0) and (0, pos)
+        ofDrawBitmapString(label, pos + 5, 15);
+        ofDrawBitmapString(label, 5, pos + 15);
+    }
+
+    ofPopMatrix();
+    ofPopMatrix();
+}
+
 
 void ofApp::drawPCL()
 {
@@ -176,10 +237,18 @@ void ofApp::drawPCL()
     ofPopStyle();
 }
 
-void ofApp::drawFBO()
+void ofApp::drawFBO() const
 {
     ofPushMatrix();
-    ofTranslate(0, 0);
+
+    // Center and scale the FBO
+    const float fboDrawWidth = fbo.getWidth();
+    const float fboDrawHeight = fbo.getHeight();
+
+    const float scaleFactor = std::min(ofWidth / fboDrawWidth, ofHeight / fboDrawHeight);
+
+    ofTranslate((ofWidth - fboDrawWidth * scaleFactor) / 2, (ofHeight - fboDrawHeight * scaleFactor) / 2);
+    ofScale(scaleFactor, scaleFactor);
 
     if (showFBO)
     {
@@ -193,20 +262,15 @@ void ofApp::drawFBO()
         ofSetColor(255, 0, 0);
         contourFinder.draw();
 
-        const auto& tracker = contourFinder.getTracker();
         for (int i = 0; i < contourFinder.size(); i++)
         {
             const cv::Rect& rect = contourFinder.getBoundingRect(i);
             const cv::Point2f& centerCv = contourFinder.getCenter(i);
-            glm::vec2 center = ofxCv::toOf(centerCv);
+            const glm::vec2 center = ofxCv::toOf(centerCv);
 
             int label = contourFinder.getLabel(i);
-            std::string msg = ofToString(label) + ":" + ofToString(tracker.getAge(label));
 
-            ofDrawBitmapString(msg, center.x, center.y);
-
-            const glm::vec2 velocity = ofxCv::toOf(contourFinder.getVelocity(i));
-            ofDrawLine(center, center + velocity * 5);
+            ofDrawBitmapString(ofToString(label), center.x, center.y);
         }
         ofPopStyle();
     }
@@ -232,6 +296,7 @@ void ofApp::draw()
     ofDisableDepthTest();
 
     if (showFBO || showTracker) drawFBO();
+    if (showFBOGrid) drawFBOGridLabels();
     if (showGUI) guiPanel.draw();
 }
 
@@ -376,6 +441,12 @@ void ofApp::processPoints(const std::vector<glm::vec3>& points)
 
         // Rotate point using the rotation matrix
         glm::vec3 rotatedPoint = rotatePoint(point, rotationMatrix);
+
+        // Apply offsets
+        rotatedPoint.x += xOffset;
+        rotatedPoint.y += yOffset;
+        rotatedPoint.z += zOffset;
+
         processedPoints.push_back(rotatedPoint);
 
         // Project the rotated point onto the grid plane (z = 0)
@@ -390,18 +461,40 @@ void ofApp::updateFbo() const
     fbo.begin();
     ofClear(0, 0, 0, 0);
 
+    ofEnableAlphaBlending();
+
     ofPushMatrix();
     ofTranslate(fbo.getWidth() / 2, fbo.getHeight() / 2);
-    ofScale(scale, scale, scale);
+    ofScale(scale, scale);
 
-    ofSetColor(255);
-    ofFill();
+    if (showFBOGrid)
+    {
+        drawFBOGrid();
+    }
+
+    // Draw projected points
+    ofSetColor(255, 255, 255, pointAlpha);
     for (const auto& point : projectedPoints)
     {
-        ofDrawCircle(point.x, point.y, pointSize);
+        float adjustedPointSize = pointSize;
+        const float distance = glm::length(point);
+        switch (pointSizeMode)
+        {
+        case 1:
+            adjustedPointSize += pointSizeMultiplier * distance;
+            break;
+        case 2:
+            adjustedPointSize += pointSizeMultiplier * distance * distance;
+            break;
+        default:
+            break;
+        }
+        adjustedPointSize = ofClamp(adjustedPointSize, 0.1f, 100.0f);
+        ofDrawCircle(point.x, point.y, adjustedPointSize);
     }
 
     ofPopMatrix();
+    ofDisableAlphaBlending();
     fbo.end();
 }
 
@@ -418,7 +511,7 @@ void ofApp::detectAndTrackBlobs()
     contourFinder.findContours(gray);
 }
 
-void ofApp::sendTrackedBlobs()
+void ofApp::sendTrackedBlobs(const int lidarID)
 {
     for (int i = 0; i < contourFinder.size(); i++)
     {
@@ -443,14 +536,16 @@ void ofApp::sendTrackedBlobs()
         ofxOscMessage m;
         if (sendCartesian)
         {
-            m.setAddress("/blob/cartesian");
+            std::string address = "/blob/cartesian/" + std::to_string(lidarID);
+            m.setAddress(address);
             m.addIntArg(label);
             m.addFloatArg(center.x); // X coordinate in mm
             m.addFloatArg(center.y); // Y coordinate in mm
         }
         else
         {
-            m.setAddress("/blob/polar");
+            std::string address = "/blob/polar/" + std::to_string(lidarID);
+            m.setAddress(address);
             const float distance = glm::length(center);
             const float angle = glm::degrees(atan2(center.y, center.x));
             m.addIntArg(label);
