@@ -1,12 +1,9 @@
 #pragma once
 
-#include <sys/stat.h>
 #include "ofMain.h"
 #include "ofxCv.h"
 #include "ofxGui.h"
-// #include "ofxImGui.h"
 #include "ofxOsc.h"
-#include "ofxXmlSettings.h"
 
 class ofApp final : public ofBaseApp
 {
