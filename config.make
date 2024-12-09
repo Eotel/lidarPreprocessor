@@ -78,7 +78,6 @@ OF_ROOT = ../../..
 # incorporated directly into the final executable application binary.
 # TODO: should this be a default setting?
 # PROJECT_LDFLAGS=-Wl,-rpath=./libs
-PROJECT_LDFLAGS = -Wl,-rpath,@loader_path/../Frameworks/
 
 ################################################################################
 # PROJECT DEFINES
